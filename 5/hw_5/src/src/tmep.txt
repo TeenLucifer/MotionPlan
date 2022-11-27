@@ -1,0 +1,122 @@
+    pieceNum;//有多少段
+    timeAllocationVector;//每一段的时间列表
+    Eigen::VectorXd timeInstance = Eigen::VectorXd::Zero(pieceNum + 1);//每段的时刻
+    for(int i = 1; i < pieceNum + 1; ++i)
+    {
+        timeInstance(i) = timeInstance(i - 1) + timeAllocationVector(i - 1);
+    }
+    /*目标函数*/
+    Eigen::MatrixXd Q = Eigen::MatrixXd::Zero(pieceNum * 6, pieceNum * 6);
+    for(int i = 0; i < pieceNum; ++i)
+    {
+        Eigen::MatrixXd Qi = Eigen::MatrixXd::Zero(6, 6);
+        double t_start = timeInstance(i);
+        double t_end = timeInstance(i + 1);
+        for(int j = 0; j < 6; ++j)//多项式为5阶
+        {
+            Qi(3, 3) = 36 * t_end - 36 * t_start;
+            Qi(3, 4) = 72 * t_end * t_end - 72 * t_start * t_start;
+            Qi(3, 5) = 120 * t_end * t_end * t_end - 120 * t_start * t_start * t_start;
+            Qi(4, 3) = 72 * t_end * t_end - 72 * t_start * t_start;
+            Qi(4, 4) = 192 * t_end * t_end * t_end - 192 * t_start * t_start * t_start;
+            Qi(4, 5) = 360 * t_end * t_end * t_end * t_end - 360 * t_start * t_start * t_start * t_start;
+            Qi(5, 3) = 120 * t_end * t_end * t_end - 120 * t_start * t_start * t_start;
+            Qi(5, 4) = 360 * t_end * t_end * t_end * t_end - 360 * t_start * t_start * t_start * t_start;
+            Qi(5, 5) = 720 * t_end * t_end * t_end * t_end * t_end - 720 * t_start * t_start * t_start * t_start * t_start;
+        }
+        Q.block<6, 6>(i * 6, i * 6) = Qi;
+    }
+
+    const static auto Factorial = [](int x)//阶乘
+    {
+        int fac = 1;
+        for(int i = x; i > 0; i--)
+        {
+            fac = fac * i;
+        }
+        return fac;
+    };
+
+    /*约束*/
+    //1.导数约束
+    /*导数约束格式*/
+    /*
+    初始位置约束
+    初始速度约束
+    初始加速度约束
+    中间位置约束
+    末尾位置约束
+    末尾速度约束
+    末尾加速度约束
+    */
+    Eigen::MatrixXd A0 = Eigen::MatrixXd::Zero(2 * 3 + pieceNum - 1, 6 * pieceNum);//2是指起始和终止状态，3是指三阶导数，pieceNum - 1是指中间有pieceNum - 1段
+    Eigen::MatrixXd b0 = Eigen::MatrixXd::Zero(2 * 3 + pieceNum - 1, 3);
+    //1.1首末状态约束
+    for(int i = 0; i < 2; ++i)//2指首末状态2个状态
+    {
+        for(int j = 0; j < 3; ++j)//3指三阶导数
+        {
+            for(int k = j; k < 6; ++k)//6指6个参数
+            {
+                double t = (i == 0) ? timeInstance(0) : timeInstance(pieceNum);
+                double coeff = Factorial(k) / Factorial(k - j);
+                A0(i * (2 * 3 + pieceNum - 1 - 3 + j), i * (pieceNum - 1) * 6 + k) = coeff * pow(t, k - j);
+            }
+        }
+    }
+    b0(0, 0) = initialPos(0); b0(0, 1) = initialPos(1); b0(0, 2) = initialPos(2);
+    b0(1, 0) = initialVel(0); b0(1, 1) = initialVel(1); b0(1, 2) = initialVel(2);
+    b0(2, 0) = initialAcc(0); b0(2, 1) = initialAcc(1); b0(2, 2) = initialAcc(2);
+    b0(2 * 3 + pieceNum - 1 - 3, 0) = terminalPos(0); b0(2 * 3 + pieceNum - 1 - 3, 1) = terminalPos(1); b0(2 * 3 + pieceNum - 1 - 3, 2) = terminalPos(2);
+    b0(2 * 3 + pieceNum - 1 - 2, 0) = terminalVel(0); b0(2 * 3 + pieceNum - 1 - 2, 1) = terminalVel(1); b0(2 * 3 + pieceNum - 1 - 2, 2) = terminalVel(2);
+    b0(2 * 3 + pieceNum - 1 - 1, 0) = terminalAcc(0); b0(2 * 3 + pieceNum - 1 - 1, 1) = terminalAcc(1); b0(2 * 3 + pieceNum - 1 - 1, 2) = terminalAcc(2);
+    //1.2每段轨迹的初始状态约束
+    for(int i = 1; i <= pieceNum - 1; ++i)
+    {
+        for(int k = 0; k < 6; ++k)
+        {
+            double t = timeInstance(i);
+            A0(3 + i - 1, i * 6 + k) = pow(t, k);
+        }
+        b0(3 + i - 1, 0) = intermediatePositions(i - 1, 0);
+        b0(3 + i - 1, 1) = intermediatePositions(i - 1, 1);
+        b0(3 + i - 1, 2) = intermediatePositions(i - 1, 2);
+    }
+    //2.连续性约束
+    /*连续性约束格式
+    位置连续性约束
+    速度连续性约束
+    加速度连续性约束
+    */
+    Eigen::MatrixXd A1 = Eigen::MatrixXd::Zero((pieceNum - 1) * 3, 6 * pieceNum);
+    Eigen::MatrixXd b1 = Eigen::MatrixXd::Zero((pieceNum - 1) * 3, 3);
+    for(int i = 1; i <= pieceNum - 1; ++i)
+    {
+        for(int j = 0; j < 3; ++j)
+        {
+            for(int k = j; k < 6; ++k)
+            {
+                double t = timeInstance(i);
+                double coeff = Factorial(k) / Factorial(k - j);
+                A1((i - 1) * 3 + j, i * 6 + k) = coeff * pow(t, k - j);
+                A1((i - 1) * 3 + j, i * 6 + k + 6) = -coeff * pow(t, k - j);
+            }
+        }
+    }
+
+    Eigen::MatrixXd A(2 * 3 + 4 * (pieceNum - 1), 6 * pieceNum);
+    Eigen::MatrixXd b(2 * 3 + 4 * (pieceNum - 1), 3);
+    Eigen::MatrixXd q = Eigen::MatrixXd::Zero(6 * pieceNum, );
+	Eigen::MatrixXd G(dim, dim);
+	Eigen::MatrixXd B(m, dim);
+	Eigen::MatrixXd C(m, m);
+
+    A << A0, A1;
+    b << b0, b1;
+
+	G = Q.inverse() - Q.inverse() * A.transpose() * (A * Q.inverse() * A.transpose()).inverse() * A * Q.inverse();
+	B = (A * Q.inverse() * A.transpose()).inverse() * A * Q.inverse();
+	C = -1 * (A * Q.inverse() * A.transpose()).inverse();
+ 
+	coefficientMatrix = B.transpose() * b - G * q;
+	//lambda = B * c - C * b;
